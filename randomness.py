@@ -1,0 +1,82 @@
+import random
+import secrets
+
+from typing import Literal
+from qrng import generate_quantum_number
+
+RNGMode = Literal["classical", "secure", "quantum", "hybrid"]
+
+prng = random.Random(2026)
+
+def classical_rng(bits: int = 36) -> int:
+    return prng.getrandbits(bits)
+
+def secure_rng(bits: int = 36) -> int:
+    return secrets.randbits(bits)
+
+def quantum_rng(qubits: int = 6, samples: int = 6) -> int:
+
+    numbers = generate_quantum_number(qubits=qubits, samples=samples)
+
+    if len(numbers) != samples:
+        raise ValueError("Incorrect quantum sample count")
+
+    combined = 0
+
+    for number in numbers:
+        if not isinstance(number, int):
+            raise ValueError("Quantum sample must be an integer")
+
+        if not 0 <= number < (1 << qubits):
+            raise ValueError("Quantum sample outside valid range")
+
+        combined = (combined << qubits) | number
+
+    return combined
+
+def hybrid_rng(qubits: int = 6, samples: int = 6) -> tuple[int, str]:
+    total_bits = qubits * samples
+    try:
+        quantum = quantum_rng(qubits, samples)
+        classical = secure_rng(total_bits)
+        return quantum ^ classical, "hybrid"
+
+    except Exception:
+        return secure_rng(total_bits), "secure_fallback"
+
+def generate_random(mode: RNGMode = "hybrid", qubits: int = 6, samples: int = 6) -> dict:
+
+    if not 1 <= qubits <= 10:
+        raise ValueError("Qubits must be between 1 and 10")
+
+    if not 1 <= samples <= 64:
+        raise ValueError("Samples must be between 1 and 64")
+
+    total_bits = qubits * samples
+
+    if mode == "classical":
+        value = classical_rng(total_bits)
+        source = "classical"
+
+    elif mode == "secure":
+        value = secure_rng(total_bits)
+        source = "secure"
+
+    elif mode == "quantum":
+        value = quantum_rng(qubits, samples)
+        source = "quantum_simulated"
+
+    elif mode == "hybrid":
+        value, source = hybrid_rng(qubits, samples)
+
+    else:
+        raise ValueError(f"Unknown RNG mode: {mode}")
+
+    normalized = (value + 0.5) / (2 ** total_bits)
+
+    return {
+        "mode": source,
+        "bits": total_bits,
+        "integer": value,
+        "normalized": normalized
+    }
