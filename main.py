@@ -1,36 +1,87 @@
+
 import os
 
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
 
+from database.connection import initialize_database
+from database.session_repository import SQLiteSessionStore
 from round_manager import RoundManager
+
 
 class StartRoundRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    wager: Decimal = Field(gt=0, description="Wager in virtual credits",)
+
+    wager: Decimal = Field(
+        gt=0,
+        description="Wager in virtual credits",
+    )
+
 
 def game_call(method, *args, **kwargs):
     try:
         return method(*args, **kwargs)
+
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc.args[0]),
+        ) from exc
+
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+store = SQLiteSessionStore()
+
+manager = RoundManager(
+    session_store=store
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+
+    # Refund old unfinished rounds once on startup.
+    store.recover_interrupted_rounds()
+
+    yield
+
 
 app = FastAPI(
     title="Quantum Cat Crash API",
-    description=("Quantum-inspired casino crash game using Qiskit Aer and hybrid randomness."), 
-    version="0.1.0"
+    description=(
+        "Quantum-inspired crash game "
+        "with persistent virtual credits."
+    ),
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
-manager = RoundManager()
-GAME_RNG_MODE = os.getenv("GAME_RNG_MODE", "hybrid").lower()
+
+GAME_RNG_MODE = os.getenv(
+    "GAME_RNG_MODE", "hybrid"
+).lower()
+
 if GAME_RNG_MODE not in {"hybrid", "secure"}:
-    raise RuntimeError("Gameplay RNG must be 'hybrid' or 'secure'")
+    raise RuntimeError(
+        "Gameplay RNG must be 'hybrid' or 'secure'"
+    )
+
 
 CORS_ORIGINS = [
     origin.strip()
@@ -39,9 +90,11 @@ CORS_ORIGINS = [
         "http://localhost:5173,"
         "http://127.0.0.1:5173,"
         "http://localhost:3000,"
-        "http://localhost:8080"
-    ).split(",") if origin.strip()
+        "http://localhost:8080",
+    ).split(",")
+    if origin.strip()
 ]
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,37 +104,111 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-Session-ID"],
 )
 
-SessionHeader = Annotated[str, Header(alias="X-Session-ID", min_length=1)]
+
+SessionHeader = Annotated[
+    str,
+    Header(alias="X-Session-ID", min_length=1),
+]
+
 
 @app.get("/api/health")
 def health():
     return {
         "status": "ok",
         "game": "Quantum Cat Crash",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "rng_mode": GAME_RNG_MODE,
     }
 
+
 @app.post("/api/sessions", status_code=201)
 def create_session():
-    return manager.create_session()
+    return game_call(manager.create_session)
+
 
 @app.post("/api/rounds", status_code=201)
-def start_round(payload: StartRoundRequest, session_id: SessionHeader):
-    return game_call(manager.start_round, session_id, payload.wager, rng_mode=GAME_RNG_MODE)
+def start_round(
+    payload: StartRoundRequest,
+    session_id: SessionHeader,
+):
+    return game_call(
+        manager.start_round,
+        session_id,
+        payload.wager,
+        rng_mode=GAME_RNG_MODE,
+    )
+
 
 @app.get("/api/rounds/{round_id}/state")
-def get_round_state(round_id: str, session_id: SessionHeader):
-    return game_call(manager.get_round_state, session_id, round_id)
+def get_round_state(
+    round_id: str,
+    session_id: SessionHeader,
+):
+    return game_call(
+        manager.get_round_state,
+        session_id,
+        round_id,
+    )
+
 
 @app.post("/api/rounds/{round_id}/cashout")
-def cash_out(round_id: str, session_id: SessionHeader):
-    return game_call(manager.cash_out, session_id, round_id)
+def cash_out(
+    round_id: str,
+    session_id: SessionHeader,
+):
+    return game_call(
+        manager.cash_out,
+        session_id,
+        round_id,
+    )
+
 
 @app.get("/api/rounds/{round_id}/result")
-def get_round_result(round_id: str, session_id: SessionHeader):
-    return game_call(manager.get_round_result, session_id, round_id)
+def get_round_result(
+    round_id: str,
+    session_id: SessionHeader,
+):
+    return game_call(
+        manager.get_round_result,
+        session_id,
+        round_id,
+    )
+
 
 @app.get("/api/player/balance")
 def get_balance(session_id: SessionHeader):
-    return game_call(manager.get_balance, session_id)
+    return game_call(
+        manager.get_balance,
+        session_id,
+    )
+
+
+@app.get("/api/player/history")
+def player_history(
+    session_id: SessionHeader,
+    limit: int = Query(30, ge=1, le=100),
+):
+    return game_call(
+        manager.get_history,
+        session_id,
+        limit,
+    )
+
+
+@app.get("/api/player/transactions")
+def player_transactions(
+    session_id: SessionHeader,
+    limit: int = Query(50, ge=1, le=100),
+):
+    return game_call(
+        manager.get_transactions,
+        session_id,
+        limit,
+    )
+
+
+@app.get("/api/leaderboard")
+def leaderboard(
+    limit: int = Query(10, ge=1, le=100),
+):
+    return store.get_leaderboard(limit)

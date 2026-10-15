@@ -1,6 +1,17 @@
+import pytest
+import main
+from round_manager import RoundManager
 from fastapi.testclient import TestClient
 from main import app
 
+@pytest.fixture(autouse=True)
+def fresh_api_manager(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "manager",
+        RoundManager()
+    )
+    
 client = TestClient(app)
 
 def test_health():

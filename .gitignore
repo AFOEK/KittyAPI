@@ -1,2 +1,6 @@
 .vscode/
 __pycache__/
+# SQLite database files
+data/*.db
+data/*.db-wal
+data/*.db-shm
