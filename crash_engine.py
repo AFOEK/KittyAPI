@@ -11,7 +11,7 @@ GROWTH_RATE = 0.18
 DISTRACTIONS = [
     "fish",
     "sleep",
-    # "yarn",
+    "yarn",
     # "butterfly",
     # "laser",
     # "cardboard_box",

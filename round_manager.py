@@ -47,14 +47,11 @@ class RoundManager:
                 session["active_round_id"] = None
 
     def _validate_can_start(self, session_id: str, wager: Decimal) -> Decimal:
-
         session = self.sessions.get(session_id)
-
         if session is None:
             raise KeyError("Session not found")
 
         active_id = session["active_round_id"]
-
         if active_id is not None:
             self._refresh_round(self.rounds[active_id], self._clock())
 
@@ -77,7 +74,6 @@ class RoundManager:
             new_balance = self._validate_can_start(session_id, wager)
             round_id = uuid4().hex
             start_time = self._clock()
-
             round_data = {
                 "round_id": round_id,
                 "session_id": session_id,

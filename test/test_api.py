@@ -1,0 +1,80 @@
+from fastapi.testclient import TestClient
+from main import app
+
+client = TestClient(app)
+
+def test_health():
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+def test_create_session():
+    response = client.post("/api/sessions")
+
+    assert response.status_code == 201
+
+    data = response.json()
+
+    assert "session_id" in data
+    assert data["balance"] == "1000.00"
+
+def test_missing_session():
+    response = client.get(
+        "/api/player/balance"
+    )
+
+    assert response.status_code == 422
+
+def test_invalid_wager():
+    session = client.post(
+        "/api/sessions"
+    ).json()
+
+    headers = {
+        "X-Session-ID": session["session_id"]
+    }
+
+    response = client.post(
+        "/api/rounds",
+        headers=headers,
+        json={"wager": "-100.00"}
+    )
+
+    assert response.status_code == 422
+
+def test_round_start(monkeypatch):
+    import main
+    from round_manager import RoundManager
+
+    clock = [100.0]
+
+    monkeypatch.setattr(
+        main,
+        "manager",
+        RoundManager(clock=lambda: clock[0])
+    )
+
+    monkeypatch.setattr(
+        "round_manager.generate_crash_point",
+        lambda mode: 3.0
+    )
+
+    monkeypatch.setattr(
+        "round_manager.select_distraction",
+        lambda: "fish"
+    )
+
+    session = client.post("/api/sessions").json()
+
+    response = client.post(
+        "/api/rounds",
+        headers={
+            "X-Session-ID": session["session_id"]
+        },
+        json={"wager": "100.00"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["balance"] == "900.00"
+    assert "crash_point" not in response.json()
