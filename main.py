@@ -81,3 +81,7 @@ def cash_out(round_id: str, session_id: SessionHeader):
 @app.get("/api/rounds/{round_id}/result")
 def get_round_result(round_id: str, session_id: SessionHeader):
     return game_call(manager.get_round_result, session_id, round_id)
+
+@app.get("/api/player/balance")
+def get_balance(session_id: SessionHeader):
+    return game_call(manager.get_balance, session_id)

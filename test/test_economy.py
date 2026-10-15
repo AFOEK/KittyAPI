@@ -1,6 +1,7 @@
 from decimal import Decimal
 from economy import place_bet, calculate_cashout, credit_winnings, calculate_profit
 import pytest
+from round_manager import RoundManager
 
 def test_place_bet():
     balance = place_bet(Decimal("1000.00"), Decimal("100.00"))
@@ -29,3 +30,46 @@ def test_crashed_round():
 def test_insufficient_balance():
     with pytest.raises(ValueError):
         place_bet(Decimal("100.00"), Decimal("200.00"))
+
+def test_cashout_at_five_seconds(monkeypatch):
+    monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 3.0)
+    clock = [100.0]
+    manager = RoundManager(clock=lambda: clock[0])
+    session_id = manager.create_session()["session_id"]
+    round_id = manager.start_round(
+        session_id,
+        Decimal("100.00")
+    )["round_id"]
+
+    # Advance time by 5 seconds
+    clock[0] += 5.0
+    result = manager.cash_out(session_id, round_id)
+    assert result["status"] == "cashed_out"
+    assert result["multiplier"] == 2.45
+    assert result["payout"] == "245.00"
+    assert result["balance"] == "1145.00"
+
+def test_cashout_after_ten_seconds(monkeypatch):
+    monkeypatch.setattr(
+        "round_manager.generate_crash_point",
+        lambda mode: 3.0
+    )
+
+    clock = [100.0]
+    manager = RoundManager(clock=lambda: clock[0])
+
+    session_id = manager.create_session()["session_id"]
+
+    round_id = manager.start_round(
+        session_id,
+        Decimal("100.00")
+    )["round_id"]
+
+    # Advance time by 10 seconds
+    clock[0] += 10.0
+
+    result = manager.cash_out(session_id, round_id)
+
+    assert result["status"] == "crashed"
+    assert result["payout"] == "0.00"
+    assert result["balance"] == "900.00"
