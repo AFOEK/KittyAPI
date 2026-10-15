@@ -1,10 +1,10 @@
 
-import threading
 import math
+import threading
 
+from decimal import Decimal
 from time import monotonic
 from uuid import uuid4
-from decimal import Decimal
 
 from crash_engine import (
     crash_after_seconds,
@@ -21,6 +21,8 @@ from economy import (
     credit_winnings,
 )
 
+from database.session_repository import from_cents
+
 
 class RoundManager:
     def __init__(self, clock=monotonic, session_store=None):
@@ -30,15 +32,30 @@ class RoundManager:
         self._lock = threading.RLock()
         self._clock = clock
 
-    # --------------------------------------------------
     # SESSION MANAGEMENT
-    # --------------------------------------------------
+
+    def _session(self, session_id: str) -> dict:
+        session = self.sessions.get(session_id)
+
+        if session is None and self._session_store is not None:
+            stored = self._session_store.get_session(session_id)
+
+            if stored is not None:
+                session = {
+                    "balance": stored["balance"],
+                    "active_round_id": None,
+                }
+                self.sessions[session_id] = session
+
+        if session is None:
+            raise KeyError("Session not found")
+
+        return session
 
     def create_session(self) -> dict:
         session_id = uuid4().hex
 
         with self._lock:
-            # Save new session to SQLite, if configured.
             if self._session_store is not None:
                 self._session_store.create_session(
                     session_id,
@@ -55,16 +72,50 @@ class RoundManager:
             "balance": str(INITIAL_BALANCE),
         }
 
+    # ROUND OWNERSHIP AND RECOVERY
+
     def _owned_round(
         self,
         session_id: str,
         round_id: str,
     ) -> dict:
-
-        if session_id not in self.sessions:
-            raise KeyError("Session not found")
+        self._session(session_id)
 
         round_data = self.rounds.get(round_id)
+
+        if round_data is None and self._session_store is not None:
+            saved = self._session_store.get_round(
+                session_id, round_id
+            )
+
+            if saved is not None:
+                if saved["status"] == "running":
+                    raise ValueError(
+                        "Running round cannot resume after a restart"
+                    )
+
+                round_data = {
+                    "round_id": saved["round_id"],
+                    "session_id": saved["session_id"],
+                    "status": saved["status"],
+                    "wager": from_cents(
+                        saved["wager_cents"]
+                    ),
+                    "crash_point": saved["crash_point"],
+                    "crash_time": saved[
+                        "crash_time_seconds"
+                    ],
+                    "distraction": saved["distraction"],
+                    "start_time": None,
+                    "cashout_multiplier": saved[
+                        "cashout_multiplier"
+                    ],
+                    "payout": from_cents(
+                        saved["payout_cents"]
+                    ),
+                }
+
+                self.rounds[round_id] = round_data
 
         if (
             round_data is None
@@ -74,22 +125,26 @@ class RoundManager:
 
         return round_data
 
-    # --------------------------------------------------
-    # ROUND STATE MANAGEMENT
-    # --------------------------------------------------
+    # ROUND STATE REFRESH
 
     def _refresh_round(
         self,
         round_data: dict,
         now: float,
     ) -> None:
-
         if round_data["status"] != "running":
             return
 
         elapsed = now - round_data["start_time"]
 
         if elapsed >= round_data["crash_time"]:
+            if self._session_store is not None:
+                self._session_store.settle_round(
+                    round_data["session_id"],
+                    round_data["round_id"],
+                    "crashed",
+                )
+
             round_data["status"] = "crashed"
 
             session = self.sessions[
@@ -102,17 +157,14 @@ class RoundManager:
             ):
                 session["active_round_id"] = None
 
+    # WAGER VALIDATION
+
     def _validate_can_start(
         self,
         session_id: str,
         wager: Decimal,
     ) -> Decimal:
-
-        session = self.sessions.get(session_id)
-
-        if session is None:
-            raise KeyError("Session not found")
-
+        session = self._session(session_id)
         active_id = session["active_round_id"]
 
         if active_id is not None:
@@ -126,14 +178,19 @@ class RoundManager:
                 "Session already has an active round"
             )
 
-        return place_bet(
-            session["balance"],
-            wager,
-        )
+        if self._session_store is not None:
+            persisted = self._session_store.get_session(
+                session_id
+            )
 
-    # --------------------------------------------------
-    # START ROUND + SQLITE WAGER PERSISTENCE
-    # --------------------------------------------------
+            if persisted is None:
+                raise KeyError("Session not found")
+
+            session["balance"] = persisted["balance"]
+
+        return place_bet(session["balance"], wager)
+
+    # START GAME ROUND
 
     def start_round(
         self,
@@ -141,54 +198,38 @@ class RoundManager:
         wager: Decimal,
         rng_mode: str = "hybrid",
     ) -> dict:
-
         wager = validate_money(wager)
 
-        # Initial validation before RNG generation.
         with self._lock:
             self._validate_can_start(
-                session_id,
-                wager,
+                session_id, wager
             )
 
-        # Generate authoritative game outcome.
         crash_point = generate_crash_point(
             mode=rng_mode
         )
-
         crash_time = crash_after_seconds(
             crash_point
         )
-
         distraction = select_distraction()
 
         with self._lock:
-            # Validate again to guard against changes
-            # while the RNG was running.
             new_balance = self._validate_can_start(
-                session_id,
-                wager,
+                session_id, wager
             )
 
             round_id = uuid4().hex
 
-            # --------------------------------------
-            # NEW: SQLite atomic wager transaction
-            # --------------------------------------
             if self._session_store is not None:
-                new_balance = (
-                    self._session_store.record_wager(
-                        session_id=session_id,
-                        round_id=round_id,
-                        wager=wager,
-                        crash_point=crash_point,
-                        crash_time=crash_time,
-                        distraction=distraction,
-                    )
+                new_balance = self._session_store.record_wager(
+                    session_id,
+                    round_id,
+                    wager,
+                    crash_point,
+                    crash_time,
+                    distraction,
                 )
 
-            # Only register the round in memory after
-            # the database transaction succeeds.
             start_time = self._clock()
 
             round_data = {
@@ -211,8 +252,7 @@ class RoundManager:
             session["active_round_id"] = round_id
 
             self._refresh_round(
-                round_data,
-                start_time,
+                round_data, start_time
             )
 
             return {
@@ -228,40 +268,29 @@ class RoundManager:
                 ),
             }
 
-    # --------------------------------------------------
     # GET LIVE ROUND STATE
-    # --------------------------------------------------
 
     def get_round_state(
         self,
         session_id: str,
         round_id: str,
     ) -> dict:
-
         with self._lock:
             round_data = self._owned_round(
-                session_id,
-                round_id,
+                session_id, round_id
             )
 
             now = self._clock()
-
-            self._refresh_round(
-                round_data,
-                now,
-            )
+            self._refresh_round(round_data, now)
 
             status = round_data["status"]
 
             if status == "running":
-                elapsed = (
-                    now - round_data["start_time"]
-                )
-
-                current = multiplier_at(elapsed)
-
+                elapsed = now - round_data["start_time"]
                 displayed = (
-                    math.floor(current * 100) / 100
+                    math.floor(
+                        multiplier_at(elapsed) * 100
+                    ) / 100
                 )
 
                 return {
@@ -282,6 +311,14 @@ class RoundManager:
                     "payout": "0.00",
                 }
 
+            if status == "interrupted":
+                return {
+                    "status": "interrupted",
+                    "multiplier": None,
+                    "distraction": None,
+                    "payout": "0.00",
+                }
+
             return {
                 "status": "cashed_out",
                 "multiplier": round_data[
@@ -293,37 +330,31 @@ class RoundManager:
                 ),
             }
 
-    # --------------------------------------------------
     # CASH OUT
-    # --------------------------------------------------
 
     def cash_out(
         self,
         session_id: str,
         round_id: str,
     ) -> dict:
-
         with self._lock:
             round_data = self._owned_round(
-                session_id,
-                round_id,
+                session_id, round_id
             )
 
             now = self._clock()
-
-            self._refresh_round(
-                round_data,
-                now,
-            )
+            self._refresh_round(round_data, now)
 
             status = round_data["status"]
-            session = self.sessions[session_id]
+            session = self._session(session_id)
 
-            if status == "crashed":
+            if status in {"crashed", "interrupted"}:
                 return {
-                    "status": "crashed",
+                    "status": status,
                     "payout": "0.00",
-                    "balance": str(session["balance"]),
+                    "balance": self.get_balance(
+                        session_id
+                    )["balance"],
                 }
 
             if status == "cashed_out":
@@ -335,90 +366,84 @@ class RoundManager:
                     "payout": str(
                         round_data["payout"]
                     ),
-                    "balance": str(
-                        session["balance"]
-                    ),
+                    "balance": self.get_balance(
+                        session_id
+                    )["balance"],
                 }
 
-            elapsed = (
-                now - round_data["start_time"]
-            )
-
-            current = multiplier_at(elapsed)
-
+            elapsed = now - round_data["start_time"]
             cashout_multiplier = (
-                math.floor(current * 100) / 100
+                math.floor(
+                    multiplier_at(elapsed) * 100
+                ) / 100
             )
 
             payout = calculate_cashout(
-                wager=round_data["wager"],
-                multiplier=cashout_multiplier,
+                round_data["wager"],
+                cashout_multiplier,
             )
 
-            # NOTE:
-            # Cash-out currently updates memory only.
-            # SQLite settlement is the next milestone.
-            session["balance"] = credit_winnings(
-                session["balance"],
-                payout,
-            )
+            if self._session_store is not None:
+                new_balance = self._session_store.settle_round(
+                    session_id,
+                    round_id,
+                    "cashed_out",
+                    payout,
+                    cashout_multiplier,
+                )
+            else:
+                new_balance = credit_winnings(
+                    session["balance"],
+                    payout,
+                )
 
+            session["balance"] = new_balance
             session["active_round_id"] = None
 
             round_data["status"] = "cashed_out"
             round_data[
                 "cashout_multiplier"
             ] = cashout_multiplier
-
             round_data["payout"] = payout
 
             return {
                 "status": "cashed_out",
                 "multiplier": cashout_multiplier,
                 "payout": str(payout),
-                "balance": str(session["balance"]),
+                "balance": str(new_balance),
             }
 
-    # --------------------------------------------------
     # PLAYER BALANCE
-    # --------------------------------------------------
 
-    def get_balance(
-        self,
-        session_id: str,
-    ) -> dict:
-
+    def get_balance(self, session_id: str) -> dict:
         with self._lock:
-            session = self.sessions.get(session_id)
+            session = self._session(session_id)
 
-            if session is None:
-                raise KeyError("Session not found")
+            if self._session_store is not None:
+                session["balance"] = (
+                    self._session_store.get_session(
+                        session_id
+                    )["balance"]
+                )
 
             return {
-                "balance": str(
-                    session["balance"]
-                )
+                "balance": str(session["balance"])
             }
 
-    # --------------------------------------------------
     # ROUND RESULT
-    # --------------------------------------------------
 
     def get_round_result(
         self,
         session_id: str,
         round_id: str,
     ) -> dict:
-
         with self._lock:
             round_data = self._owned_round(
-                session_id,
-                round_id,
+                session_id, round_id
             )
 
             self._refresh_round(
-                round_data,
-                self._clock(),
+                round_data, self._clock()
             )
 
             if round_data["status"] == "running":
@@ -439,3 +464,37 @@ class RoundManager:
                     round_data["payout"]
                 ),
             }
+
+    # BET HISTORY
+
+    def get_history(
+        self,
+        session_id: str,
+        limit: int = 30,
+    ) -> list[dict]:
+        with self._lock:
+            self._session(session_id)
+
+            if self._session_store is None:
+                return []
+
+            return self._session_store.get_history(
+                session_id, limit
+            )
+
+    # TRANSACTION HISTORY
+
+    def get_transactions(
+        self,
+        session_id: str,
+        limit: int = 50,
+    ) -> list[dict]:
+        with self._lock:
+            self._session(session_id)
+
+            if self._session_store is None:
+                return []
+
+            return self._session_store.get_transactions(
+                session_id, limit
+            )

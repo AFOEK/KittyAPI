@@ -1,48 +1,75 @@
 
 from decimal import Decimal
+from hashlib import sha256
 from math import isfinite
 
+from economy import (
+    INITIAL_BALANCE,
+    MIN_BET,
+    MAX_BET,
+    validate_money,
+    calculate_cashout,
+)
 from .connection import get_connection
-from economy import MIN_BET, MAX_BET, validate_money
+
+
+CENTS = Decimal("100")
+
+
+def to_cents(amount: Decimal) -> int:
+    return int(validate_money(amount) * CENTS)
+
+
+def from_cents(value: int) -> Decimal:
+    return (Decimal(value) / CENTS).quantize(
+        Decimal("0.01")
+    )
 
 
 class SQLiteSessionStore:
+    def __init__(self, db_path=None):
+        self.db_path = db_path
 
-    # ----------------------------------------
-    # CREATE SESSION
-    # ----------------------------------------
+    def _connect(self):
+        return get_connection(self.db_path)
+
+    # SESSION CREATION
 
     def create_session(
         self,
         session_id: str,
-        balance: Decimal
+        balance: Decimal = INITIAL_BALANCE,
     ):
-        balance = validate_money(balance)
-        balance_cents = int(balance * 100)
-
-        conn = get_connection()
+        cents = to_cents(balance)
+        conn = self._connect()
 
         try:
             with conn:
                 conn.execute(
                     """
-                    INSERT INTO sessions (
-                        session_id,
-                        balance_cents
-                    )
-                    VALUES (?, ?)
+                    INSERT INTO sessions(
+                        session_id, balance_cents
+                    ) VALUES (?, ?)
                     """,
-                    (session_id, balance_cents)
+                    (session_id, cents),
                 )
+
+                if cents:
+                    conn.execute(
+                        """
+                        INSERT INTO credit_transactions(
+                            session_id, kind, amount_cents
+                        ) VALUES (?, 'initial_grant', ?)
+                        """,
+                        (session_id, cents),
+                    )
         finally:
             conn.close()
 
-    # ----------------------------------------
-    # GET SESSION
-    # ----------------------------------------
+    # SESSION RETRIEVAL
 
     def get_session(self, session_id: str):
-        conn = get_connection()
+        conn = self._connect()
 
         try:
             row = conn.execute(
@@ -51,7 +78,7 @@ class SQLiteSessionStore:
                 FROM sessions
                 WHERE session_id = ?
                 """,
-                (session_id,)
+                (session_id,),
             ).fetchone()
         finally:
             conn.close()
@@ -59,21 +86,31 @@ class SQLiteSessionStore:
         if row is None:
             return None
 
-        balance = (
-            Decimal(row["balance_cents"])
-            / Decimal("100")
-        )
-
         return {
             "session_id": row["session_id"],
-            "balance": balance.quantize(
-                Decimal("0.01")
-            )
+            "balance": from_cents(row["balance_cents"]),
         }
 
-    # ----------------------------------------
-    # RECORD WAGER
-    # ----------------------------------------
+    # ROUND RETRIEVAL
+
+    def get_round(self, session_id: str, round_id: str):
+        conn = self._connect()
+
+        try:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM rounds
+                WHERE session_id = ? AND round_id = ?
+                """,
+                (session_id, round_id),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        return None if row is None else dict(row)
+
+    # ATOMIC WAGER TRANSACTION
 
     def record_wager(
         self,
@@ -82,16 +119,12 @@ class SQLiteSessionStore:
         wager: Decimal,
         crash_point: float,
         crash_time: float,
-        distraction: str
+        distraction: str,
     ) -> Decimal:
-
-        # Validate wager
-        wager = validate_money(wager)
+        cents = to_cents(wager)
 
         if not MIN_BET <= wager <= MAX_BET:
-            raise ValueError(
-                "Wager outside betting limits"
-            )
+            raise ValueError("Wager outside betting limits")
 
         if not isfinite(crash_point) or crash_point < 1.0:
             raise ValueError("Invalid crash point")
@@ -99,16 +132,12 @@ class SQLiteSessionStore:
         if not isfinite(crash_time) or crash_time < 0:
             raise ValueError("Invalid crash time")
 
-        wager_cents = int(wager * 100)
-
-        conn = get_connection()
+        conn = self._connect()
 
         try:
             with conn:
-                # Begin atomic write transaction
                 conn.execute("BEGIN IMMEDIATE")
 
-                # Deduct wager
                 cursor = conn.execute(
                     """
                     UPDATE sessions
@@ -116,11 +145,7 @@ class SQLiteSessionStore:
                     WHERE session_id = ?
                       AND balance_cents >= ?
                     """,
-                    (
-                        wager_cents,
-                        session_id,
-                        wager_cents
-                    )
+                    (cents, session_id, cents),
                 )
 
                 if cursor.rowcount != 1:
@@ -128,10 +153,9 @@ class SQLiteSessionStore:
                         "Insufficient credits or unknown session"
                     )
 
-                # Insert new round
                 conn.execute(
                     """
-                    INSERT INTO rounds (
+                    INSERT INTO rounds(
                         round_id,
                         session_id,
                         wager_cents,
@@ -145,36 +169,43 @@ class SQLiteSessionStore:
                     (
                         round_id,
                         session_id,
-                        wager_cents,
+                        cents,
                         crash_point,
                         crash_time,
-                        distraction
-                    )
+                        distraction,
+                    ),
                 )
 
-                # Get updated balance
+                conn.execute(
+                    """
+                    INSERT INTO credit_transactions(
+                        session_id,
+                        round_id,
+                        kind,
+                        amount_cents
+                    )
+                    VALUES (?, ?, 'wager', ?)
+                    """,
+                    (session_id, round_id, -cents),
+                )
+
                 row = conn.execute(
                     """
                     SELECT balance_cents
                     FROM sessions
                     WHERE session_id = ?
                     """,
-                    (session_id,)
+                    (session_id,),
                 ).fetchone()
 
-                new_balance_cents = row["balance_cents"]
+                balance = row["balance_cents"]
 
-            return (
-                Decimal(new_balance_cents)
-                / Decimal("100")
-            ).quantize(Decimal("0.01"))
+            return from_cents(balance)
 
         finally:
             conn.close()
 
-    # ----------------------------------------
-    # SETTLE ROUND
-    # ----------------------------------------
+    # ATOMIC CASH-OUT / CRASH SETTLEMENT
 
     def settle_round(
         self,
@@ -182,112 +213,330 @@ class SQLiteSessionStore:
         round_id: str,
         status: str,
         payout: Decimal = Decimal("0.00"),
-        multiplier: float | None = None
+        multiplier: float | None = None,
     ) -> Decimal:
+        if status not in {"cashed_out", "crashed"}:
+            raise ValueError("Invalid settlement status")
 
-        # Validate settlement status
-        if status not in {"crashed", "cashed_out"}:
-            raise ValueError(
-                "Invalid settlement status"
-            )
+        cents = to_cents(payout)
 
-        payout = validate_money(payout)
-
-        # Crashed rounds cannot pay winnings
         if status == "crashed":
-            if payout != 0 or multiplier is not None:
+            if cents or multiplier is not None:
                 raise ValueError(
-                    "Crashed rounds cannot pay winnings"
+                    "Crashed round cannot pay winnings"
                 )
-
-        # Validate cash-out parameters
-        if status == "cashed_out":
+        else:
             if (
-                payout <= 0
-                or multiplier is None
+                multiplier is None
                 or not isfinite(multiplier)
-                or multiplier < 1.0
+                or multiplier < 1
             ):
-                raise ValueError(
-                    "Invalid cash-out settlement"
-                )
+                raise ValueError("Invalid multiplier")
 
-        payout_cents = int(payout * 100)
+            if cents <= 0:
+                raise ValueError("Payout must be positive")
 
-        conn = get_connection()
+        conn = self._connect()
 
         try:
             with conn:
-                # Begin atomic write transaction
                 conn.execute("BEGIN IMMEDIATE")
 
-                # Update round status exactly once
-                cursor = conn.execute(
+                row = conn.execute(
+                    """
+                    SELECT status, wager_cents
+                    FROM rounds
+                    WHERE session_id = ?
+                      AND round_id = ?
+                    """,
+                    (session_id, round_id),
+                ).fetchone()
+
+                if row is None or row["status"] != "running":
+                    raise ValueError(
+                        "Round already settled or not found"
+                    )
+
+                if status == "cashed_out":
+                    expected = calculate_cashout(
+                        from_cents(row["wager_cents"]),
+                        multiplier,
+                    )
+
+                    if payout != expected:
+                        raise ValueError(
+                            "Payout does not match wager and multiplier"
+                        )
+
+                conn.execute(
                     """
                     UPDATE rounds
                     SET status = ?,
                         payout_cents = ?,
                         cashout_multiplier = ?,
                         finished_at = CURRENT_TIMESTAMP
-                    WHERE round_id = ?
-                      AND session_id = ?
+                    WHERE session_id = ?
+                      AND round_id = ?
                       AND status = 'running'
                     """,
                     (
                         status,
-                        payout_cents,
+                        cents,
                         multiplier,
+                        session_id,
                         round_id,
-                        session_id
-                    )
+                    ),
                 )
 
-                if cursor.rowcount != 1:
-                    raise ValueError(
-                        "Round already settled or not found"
-                    )
-
-                # Credit payout for successful cash-out
-                if payout_cents > 0:
-                    cursor = conn.execute(
+                if cents:
+                    conn.execute(
                         """
                         UPDATE sessions
                         SET balance_cents = balance_cents + ?
                         WHERE session_id = ?
                         """,
-                        (
-                            payout_cents,
-                            session_id
-                        )
+                        (cents, session_id),
                     )
 
-                    if cursor.rowcount != 1:
-                        raise ValueError(
-                            "Session not found"
+                    conn.execute(
+                        """
+                        INSERT INTO credit_transactions(
+                            session_id,
+                            round_id,
+                            kind,
+                            amount_cents
                         )
+                        VALUES (?, ?, 'payout', ?)
+                        """,
+                        (session_id, round_id, cents),
+                    )
 
-                # Retrieve final balance
                 row = conn.execute(
                     """
                     SELECT balance_cents
                     FROM sessions
                     WHERE session_id = ?
                     """,
-                    (session_id,)
+                    (session_id,),
                 ).fetchone()
 
-                if row is None:
-                    raise ValueError(
-                        "Session not found"
-                    )
+                balance = row["balance_cents"]
 
-                balance_cents = row["balance_cents"]
-
-            # Return balance after transaction commits
-            return (
-                Decimal(balance_cents)
-                / Decimal("100")
-            ).quantize(Decimal("0.01"))
+            return from_cents(balance)
 
         finally:
             conn.close()
+
+    # SERVER RESTART RECOVERY
+
+    def recover_interrupted_rounds(self) -> int:
+        """
+        Refund previously running rounds once.
+        Call during application startup only.
+        """
+        conn = self._connect()
+
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+
+                pending = conn.execute(
+                    """
+                    SELECT round_id, session_id, wager_cents
+                    FROM rounds
+                    WHERE status = 'running'
+                    """
+                ).fetchall()
+
+                for record in pending:
+                    rid = record["round_id"]
+                    sid = record["session_id"]
+                    cents = record["wager_cents"]
+
+                    conn.execute(
+                        """
+                        UPDATE rounds
+                        SET status = 'interrupted',
+                            finished_at = CURRENT_TIMESTAMP
+                        WHERE round_id = ?
+                          AND status = 'running'
+                        """,
+                        (rid,),
+                    )
+
+                    conn.execute(
+                        """
+                        UPDATE sessions
+                        SET balance_cents = balance_cents + ?
+                        WHERE session_id = ?
+                        """,
+                        (cents, sid),
+                    )
+
+                    conn.execute(
+                        """
+                        INSERT INTO credit_transactions(
+                            session_id,
+                            round_id,
+                            kind,
+                            amount_cents
+                        )
+                        VALUES (?, ?, 'refund', ?)
+                        """,
+                        (sid, rid, cents),
+                    )
+
+            return len(pending)
+
+        finally:
+            conn.close()
+
+    # PLAYER BET HISTORY
+
+    def get_history(
+        self,
+        session_id: str,
+        limit: int = 30,
+    ) -> list[dict]:
+        conn = self._connect()
+
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    round_id,
+                    status,
+                    wager_cents,
+                    payout_cents,
+                    cashout_multiplier,
+                    started_at,
+                    finished_at
+                FROM rounds
+                WHERE session_id = ?
+                ORDER BY started_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        return [
+            {
+                "round_id": row["round_id"],
+                "status": row["status"],
+                "wager": str(
+                    from_cents(row["wager_cents"])
+                ),
+                "payout": str(
+                    from_cents(row["payout_cents"])
+                ),
+                "net_profit": (
+                    str(
+                        from_cents(
+                            row["payout_cents"]
+                            - row["wager_cents"]
+                        )
+                    )
+                    if row["status"] in {
+                        "crashed",
+                        "cashed_out",
+                    }
+                    else None
+                ),
+                "cashout_multiplier": row[
+                    "cashout_multiplier"
+                ],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+            }
+            for row in rows
+        ]
+
+    # PLAYER CREDIT TRANSACTIONS
+
+    def get_transactions(
+        self,
+        session_id: str,
+        limit: int = 50,
+    ) -> list[dict]:
+        conn = self._connect()
+
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    event_id,
+                    round_id,
+                    kind,
+                    amount_cents,
+                    created_at
+                FROM credit_transactions
+                WHERE session_id = ?
+                ORDER BY event_id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        return [
+            {
+                "event_id": row["event_id"],
+                "round_id": row["round_id"],
+                "kind": row["kind"],
+                "amount": str(
+                    from_cents(row["amount_cents"])
+                ),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    # PUBLIC LEADERBOARD
+
+    def get_leaderboard(
+        self,
+        limit: int = 10,
+    ) -> list[dict]:
+        conn = self._connect()
+
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    session_id,
+                    COUNT(*) AS games,
+                    SUM(
+                        CASE WHEN status = 'cashed_out'
+                        THEN 1 ELSE 0 END
+                    ) AS wins,
+                    SUM(
+                        payout_cents - wager_cents
+                    ) AS net_cents
+                FROM rounds
+                WHERE status IN ('cashed_out', 'crashed')
+                GROUP BY session_id
+                ORDER BY net_cents DESC, games DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        return [
+            {
+                "rank": index,
+                "player": "Cat-" + sha256(
+                    row["session_id"].encode()
+                ).hexdigest()[:8],
+                "games": row["games"],
+                "wins": row["wins"],
+                "net_profit": str(
+                    from_cents(row["net_cents"])
+                ),
+            }
+            for index, row in enumerate(rows, start=1)
+        ]
