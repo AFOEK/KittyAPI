@@ -1,4 +1,6 @@
 import os
+from database.connection import initialize_database
+from database.session_repository import SQLiteSessionStore
 
 from decimal import Decimal
 from typing import Annotated
@@ -27,8 +29,19 @@ app = FastAPI(
     version="0.1.0"
 )
 
-manager = RoundManager()
+# manager = RoundManager()
+# GAME_RNG_MODE = os.getenv("GAME_RNG_MODE", "hybrid").lower()
+# if GAME_RNG_MODE not in {"hybrid", "secure"}:
+#     raise RuntimeError("Gameplay RNG must be 'hybrid' or 'secure'")
+initialize_database()
+
+manager = RoundManager(
+    session_store=SQLiteSessionStore()
+)
+
+# Configure gameplay randomness
 GAME_RNG_MODE = os.getenv("GAME_RNG_MODE", "hybrid").lower()
+
 if GAME_RNG_MODE not in {"hybrid", "secure"}:
     raise RuntimeError("Gameplay RNG must be 'hybrid' or 'secure'")
 
