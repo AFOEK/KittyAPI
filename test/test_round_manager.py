@@ -12,7 +12,7 @@ def test_create_session():
 
 def test_start_round(monkeypatch):
     monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 2.0)
-    monkeypatch.setattr("round_manager.select_distraction", lambda: "fish")
+    monkeypatch.setattr("round_manager.select_distraction", lambda season: "fish")
     manager = RoundManager()
     session = manager.create_session()
     session_id = session["session_id"]
@@ -29,12 +29,12 @@ def test_successful_cashout(monkeypatch):
     session_id = session["session_id"]
     round_data = manager.start_round(session_id, Decimal("100.00"))
     round_id = round_data["round_id"]
-    # Advance the clock by one second.
-    clock[0] += 1.0
+    # Advance the clock by five second.
+    clock[0] += 5.0
     result = manager.cash_out(session_id, round_id)
     assert result["status"] == "cashed_out"
-    assert result["payout"] == "119.00"
-    assert result["balance"] == "1019.00"
+    assert result["payout"] == "127.00"
+    assert result["balance"] == "1027.00"
 
 def test_duplicate_cashout(monkeypatch):
     monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 2.0)
@@ -42,11 +42,11 @@ def test_duplicate_cashout(monkeypatch):
     manager = RoundManager(clock=lambda: clock[0])
     session_id = manager.create_session()["session_id"]
     round_id = manager.start_round(session_id, Decimal("100.00"))["round_id"]
-    clock[0] += 1.0
+    clock[0] += 5.0
     first = manager.cash_out(session_id, round_id)
     second = manager.cash_out(session_id, round_id)
     assert first["payout"] == second["payout"]
-    assert manager.get_balance(session_id)["balance"] == "1019.00"
+    assert manager.get_balance(session_id)["balance"] == "1027.00"
 
 def test_crashed_round(monkeypatch):
     monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 2.0)
@@ -55,7 +55,7 @@ def test_crashed_round(monkeypatch):
     session_id = manager.create_session()["session_id"]
     round_id = manager.start_round(session_id, Decimal("100.00"))["round_id"]
     # Advance beyond the 2x crash deadline.
-    clock[0] += 5.0
+    clock[0] += 10.0
     result = manager.cash_out(session_id, round_id)
     assert result["status"] == "crashed"
     assert result["payout"] == "0.00"
@@ -76,19 +76,62 @@ def test_round_lifecycle():
     assert round_data["balance"] == "900.00"
     assert round_data["status"] == "running"
 
-    clock[0] += 3.0
+    clock[0] += 5.0
     state = manager.get_round_state(session_id, round_id)
 
     assert state["status"] == "running"
-    assert state["multiplier"] == 1.71
+    assert state["multiplier"] == 1.27
 
     result = manager.cash_out(session_id, round_id)
 
     assert result["status"] == "cashed_out"
-    assert result["payout"] == "171.00"
-    assert result["balance"] == "1071.00"
+    assert result["payout"] == "127.00"
+    assert result["balance"] == "1027.00"
 
-    # Try cashing out again.
     duplicate = manager.cash_out(session_id, round_id)
-    assert duplicate["payout"] == "171.00"
-    assert manager.get_balance(session_id)["balance"] == "1071.00"
+
+    assert duplicate["payout"] == "127.00"
+
+    assert manager.get_balance(session_id)["balance"] == "1027.00"
+
+def test_seasonal_round_lifecycle(monkeypatch):
+    monkeypatch.setattr(
+        "round_manager.generate_crash_point",
+        lambda mode: 3.0
+    )
+    patch("round_manager.select_season", return_value="spring")
+    monkeypatch.setattr(
+        "round_manager.select_distraction",
+        lambda season: "butterfly"
+    )
+
+    clock = [100.0]
+    manager = RoundManager(clock=lambda: clock[0])
+
+    session_id = manager.create_session()["session_id"]
+
+    started = manager.start_round(
+        session_id,
+        Decimal("100.00")
+    )
+    round_id = started["round_id"]
+
+    clock[0] += 2.9
+    state = manager.get_round_state(session_id, round_id)
+
+    assert state["status"] == "running"
+    assert state["phase"] == "warmup"
+    assert state["multiplier"] == 1.0
+    assert state["can_cashout"] is False
+
+    clock[0] += 2.1
+    state = manager.get_round_state(session_id, round_id)
+
+    assert state["phase"] == "active"
+    assert state["multiplier"] == 1.27
+
+    result = manager.cash_out(session_id, round_id)
+
+    assert result["status"] == "cashed_out"
+    assert result["payout"] == "127.00"
+    assert result["balance"] == "1027.00"

@@ -29,6 +29,22 @@ def initialize_database(db_path=None):
         conn.executescript(
             SCHEMA_PATH.read_text(encoding="utf-8")
         )
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(rounds)")
+        }
+
+        columns = {
+            "season": "TEXT NOT NULL DEFAULT 'spring'",
+            "growth_rate": "REAL NOT NULL DEFAULT 0.12",
+            "rush": "INTEGER NOT NULL DEFAULT 0",
+            "lead_in_seconds": "REAL NOT NULL DEFAULT 3.0",
+        }
+
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE rounds ADD COLUMN {name} {definition}")
+
         conn.commit()
     finally:
         conn.close()

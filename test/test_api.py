@@ -73,7 +73,7 @@ def test_round_start(monkeypatch):
 
     monkeypatch.setattr(
         "round_manager.select_distraction",
-        lambda: "fish"
+        lambda season: "fish"
     )
 
     session = client.post("/api/sessions").json()

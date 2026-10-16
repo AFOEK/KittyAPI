@@ -45,9 +45,9 @@ def test_cashout_at_five_seconds(monkeypatch):
     clock[0] += 5.0
     result = manager.cash_out(session_id, round_id)
     assert result["status"] == "cashed_out"
-    assert result["multiplier"] == 2.45
-    assert result["payout"] == "245.00"
-    assert result["balance"] == "1145.00"
+    assert result["multiplier"] == 1.27
+    assert result["payout"] == "127.00"
+    assert result["balance"] == "1027.00"
 
 def test_cashout_after_ten_seconds(monkeypatch):
     monkeypatch.setattr(
@@ -66,7 +66,7 @@ def test_cashout_after_ten_seconds(monkeypatch):
     )["round_id"]
 
     # Advance time by 10 seconds
-    clock[0] += 10.0
+    clock[0] += 15.0
 
     result = manager.cash_out(session_id, round_id)
 

@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS rounds (
     crash_point REAL NOT NULL,
     crash_time_seconds REAL NOT NULL,
     distraction TEXT,
+
+    season TEXT NOT NULL DEFAULT 'spring',
+    growth_rate REAL NOT NULL DEFAULT 0.12,
+    rush INTEGER NOT NULL DEFAULT 0,
+    lead_in_seconds REAL NOT NULL DEFAULT 3.0,
+
     cashout_multiplier REAL,
 
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

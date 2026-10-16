@@ -45,17 +45,14 @@ def test_cashout_persisted_exactly_once(
         "900.00"
     )
 
-    clock[0] += 1
+    clock[0] += 5
 
     first = mgr.cash_out(sid, rid)
     second = mgr.cash_out(sid, rid)
 
     assert first == second
-    assert first["balance"] == "1019.00"
-
-    assert store.get_session(sid)["balance"] == Decimal(
-        "1019.00"
-    )
+    assert first["balance"] == "1027.00"
+    assert store.get_session(sid)["balance"] == Decimal("1027.00")
 
     conn = get_connection(db_path)
     try:
@@ -78,12 +75,12 @@ def test_cashout_persisted_exactly_once(
     finally:
         conn.close()
 
-    assert tuple(record) == ("cashed_out", 11900)
+    assert tuple(record) == ("cashed_out", 12700)
     assert payouts == 1
 
     restarted = RoundManager(session_store=store)
 
-    assert restarted.get_balance(sid)["balance"] == "1019.00"
+    assert restarted.get_balance(sid)["balance"] == "1027.00"
     assert restarted.get_round_result(
         sid, rid
     )["status"] == "cashed_out"

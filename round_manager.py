@@ -7,10 +7,13 @@ from time import monotonic
 from uuid import uuid4
 
 from crash_engine import (
+    generate_crash_point,
     crash_after_seconds,
     multiplier_at,
     select_distraction,
-    generate_crash_point,
+    select_season,
+    season_growth_rate,
+    MIN_CRASH_SECONDS,
 )
 
 from economy import (
@@ -98,21 +101,19 @@ class RoundManager:
                     "round_id": saved["round_id"],
                     "session_id": saved["session_id"],
                     "status": saved["status"],
-                    "wager": from_cents(
-                        saved["wager_cents"]
-                    ),
+                    "wager": from_cents(saved["wager_cents"]),
                     "crash_point": saved["crash_point"],
-                    "crash_time": saved[
-                        "crash_time_seconds"
-                    ],
+                    "crash_time": saved["crash_time_seconds"],
                     "distraction": saved["distraction"],
+
+                    "season": saved["season"],
+                    "growth_rate": saved["growth_rate"],
+                    "rush": bool(saved["rush"]),
+                    "lead_in_seconds": saved["lead_in_seconds"],
+
                     "start_time": None,
-                    "cashout_multiplier": saved[
-                        "cashout_multiplier"
-                    ],
-                    "payout": from_cents(
-                        saved["payout_cents"]
-                    ),
+                    "cashout_multiplier": saved["cashout_multiplier"],
+                    "payout": from_cents(saved["payout_cents"]),
                 }
 
                 self.rounds[round_id] = round_data
@@ -205,14 +206,11 @@ class RoundManager:
                 session_id, wager
             )
 
-        crash_point = generate_crash_point(
-            mode=rng_mode
-        )
-        crash_time = crash_after_seconds(
-            crash_point
-        )
-        distraction = select_distraction()
-
+        season = select_season()
+        growth_rate, rush = season_growth_rate(season, mode=rng_mode)
+        crash_point = generate_crash_point(mode=rng_mode)
+        crash_time = crash_after_seconds(crash_point, growth_rate=growth_rate, lead_in_seconds=MIN_CRASH_SECONDS)
+        distraction = select_distraction(season)
         with self._lock:
             new_balance = self._validate_can_start(
                 session_id, wager
@@ -228,6 +226,10 @@ class RoundManager:
                     crash_point,
                     crash_time,
                     distraction,
+                    season=season,
+                    growth_rate=growth_rate,
+                    rush=rush,
+                    lead_in_seconds=MIN_CRASH_SECONDS,
                 )
 
             start_time = self._clock()
@@ -243,6 +245,10 @@ class RoundManager:
                 "start_time": start_time,
                 "cashout_multiplier": None,
                 "payout": Decimal("0.00"),
+                "season": season,
+                "growth_rate": growth_rate,
+                "rush": rush,
+                "lead_in_seconds": MIN_CRASH_SECONDS,
             }
 
             self.rounds[round_id] = round_data
@@ -266,6 +272,15 @@ class RoundManager:
                     if round_data["status"] == "crashed"
                     else None
                 ),
+                "season": season,
+                "rush": rush,
+                "phase": (
+                    "warmup"
+                    if round_data["status"] == "running"
+                    else "crashed"
+                ),
+                "warmup_seconds": MIN_CRASH_SECONDS,
+                "can_cashout": False,
             }
 
     # GET LIVE ROUND STATE
@@ -287,14 +302,30 @@ class RoundManager:
 
             if status == "running":
                 elapsed = now - round_data["start_time"]
-                displayed = (
-                    math.floor(
-                        multiplier_at(elapsed) * 100
-                    ) / 100
+                current = multiplier_at(
+                    elapsed,
+                    growth_rate=round_data["growth_rate"],
+                    lead_in_seconds=round_data["lead_in_seconds"]
                 )
-
+                displayed = math.floor(current * 100) / 100
+                phase = (
+                    "warmup"
+                    if elapsed < round_data["lead_in_seconds"]
+                    else "active"
+                )
                 return {
                     "status": "running",
+                    "season": round_data["season"],
+                    "rush": round_data["rush"],
+                    "phase": phase,
+                    "warmup_remaining": round(
+                        max(
+                            0.0,
+                            round_data["lead_in_seconds"] - elapsed
+                        ),
+                        2
+                    ),
+                    "can_cashout": phase == "active",
                     "multiplier": displayed,
                     "distraction": None,
                 }
@@ -372,17 +403,12 @@ class RoundManager:
                 }
 
             elapsed = now - round_data["start_time"]
-            cashout_multiplier = (
-                math.floor(
-                    multiplier_at(elapsed) * 100
-                ) / 100
-            )
+            if elapsed < round_data["lead_in_seconds"]:
+                raise ValueError("Cash-out unavailable during warm-up")
 
-            payout = calculate_cashout(
-                round_data["wager"],
-                cashout_multiplier,
-            )
-
+            current = multiplier_at(elapsed, growth_rate=round_data["growth_rate"], lead_in_seconds=round_data["lead_in_seconds"])
+            cashout_multiplier = math.floor(current * 100) / 100
+            payout = calculate_cashout(round_data["wager"], cashout_multiplier,)
             if self._session_store is not None:
                 new_balance = self._session_store.settle_round(
                     session_id,
@@ -454,15 +480,11 @@ class RoundManager:
 
             return {
                 "status": round_data["status"],
-                "crash_point": round_data[
-                    "crash_point"
-                ],
-                "distraction": round_data[
-                    "distraction"
-                ],
-                "payout": str(
-                    round_data["payout"]
-                ),
+                "season": round_data["season"],
+                "rush": round_data["rush"],
+                "crash_point": round_data["crash_point"],
+                "distraction": round_data["distraction"],
+                "payout": str(round_data["payout"]),
             }
 
     # BET HISTORY

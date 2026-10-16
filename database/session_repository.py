@@ -120,6 +120,10 @@ class SQLiteSessionStore:
         crash_point: float,
         crash_time: float,
         distraction: str,
+        season: str = "spring",
+        growth_rate: float = 0.12,
+        rush: bool = False,
+        lead_in_seconds: float = 3.0,
     ) -> Decimal:
         cents = to_cents(wager)
 
@@ -162,9 +166,13 @@ class SQLiteSessionStore:
                         status,
                         crash_point,
                         crash_time_seconds,
-                        distraction
+                        distraction,
+                        season,
+                        growth_rate,
+                        rush,
+                        lead_in_seconds
                     )
-                    VALUES (?, ?, ?, 'running', ?, ?, ?)
+                    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         round_id,
@@ -173,6 +181,10 @@ class SQLiteSessionStore:
                         crash_point,
                         crash_time,
                         distraction,
+                        season,
+                        growth_rate,
+                        int(rush),
+                        lead_in_seconds,
                     ),
                 )
 
