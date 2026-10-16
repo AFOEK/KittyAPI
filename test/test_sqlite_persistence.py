@@ -21,14 +21,10 @@ def setup_db(tmp_path):
 
 
 def test_cashout_persisted_exactly_once(
-    setup_db, monkeypatch
+    setup_db, mock_round_plan
 ):
     store, db_path = setup_db
-
-    monkeypatch.setattr(
-        "round_manager.generate_crash_point",
-        lambda mode: 2.0,
-    )
+    mock_round_plan(crash_point=2.0)
 
     clock = [100.0]
     mgr = RoundManager(
@@ -86,13 +82,9 @@ def test_cashout_persisted_exactly_once(
     )["status"] == "cashed_out"
 
 
-def test_crash_persists(setup_db, monkeypatch):
+def test_crash_persists(setup_db, mock_round_plan):
     store, _ = setup_db
-
-    monkeypatch.setattr(
-        "round_manager.generate_crash_point",
-        lambda mode: 2.0,
-    )
+    mock_round_plan(crash_point=2.0)
 
     clock = [100.0]
     mgr = RoundManager(
@@ -120,16 +112,9 @@ def test_crash_persists(setup_db, monkeypatch):
     )
 
 
-def test_restart_refunds_pending_once(
-    setup_db, monkeypatch
-):
+def test_restart_refunds_pending_once(setup_db, mock_round_plan):
     store, _ = setup_db
-
-    monkeypatch.setattr(
-        "round_manager.generate_crash_point",
-        lambda mode: 2.0,
-    )
-
+    mock_round_plan(crash_point=2.0)
     mgr = RoundManager(session_store=store)
     sid = mgr.create_session()["session_id"]
 
@@ -177,6 +162,15 @@ def test_failed_duplicate_round_rollback(setup_db):
         2.0,
         3.0,
         "fish",
+        season_schedule=[
+            {
+                "season": "spring",
+                "start": 0.0,
+                "end": 10.0,
+                "growth_rate": 0.12,
+                "rush": False,
+            }
+        ],
     )
 
     with pytest.raises(sqlite3.IntegrityError):
@@ -187,6 +181,15 @@ def test_failed_duplicate_round_rollback(setup_db):
             2.0,
             3.0,
             "fish",
+            season_schedule=[
+                {
+                    "season": "spring",
+                    "start": 0.0,
+                    "end": 10.0,
+                    "growth_rate": 0.12,
+                    "rush": False,
+                }
+            ],
         )
 
     assert store.get_session(sid)["balance"] == Decimal(

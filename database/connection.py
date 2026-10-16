@@ -39,6 +39,7 @@ def initialize_database(db_path=None):
             "growth_rate": "REAL NOT NULL DEFAULT 0.12",
             "rush": "INTEGER NOT NULL DEFAULT 0",
             "lead_in_seconds": "REAL NOT NULL DEFAULT 3.0",
+            "season_schedule_json": "TEXT",
         }
 
         for name, definition in columns.items():

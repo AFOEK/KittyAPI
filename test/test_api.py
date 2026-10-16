@@ -54,10 +54,7 @@ def test_invalid_wager():
 
     assert response.status_code == 422
 
-def test_round_start(monkeypatch):
-    import main
-    from round_manager import RoundManager
-
+def test_round_start(monkeypatch, mock_round_plan):
     clock = [100.0]
 
     monkeypatch.setattr(
@@ -66,15 +63,7 @@ def test_round_start(monkeypatch):
         RoundManager(clock=lambda: clock[0])
     )
 
-    monkeypatch.setattr(
-        "round_manager.generate_crash_point",
-        lambda mode: 3.0
-    )
-
-    monkeypatch.setattr(
-        "round_manager.select_distraction",
-        lambda season: "fish"
-    )
+    mock_round_plan(crash_point=3.0)
 
     session = client.post("/api/sessions").json()
 

@@ -31,8 +31,8 @@ def test_insufficient_balance():
     with pytest.raises(ValueError):
         place_bet(Decimal("100.00"), Decimal("200.00"))
 
-def test_cashout_at_five_seconds(monkeypatch):
-    monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 3.0)
+def test_cashout_at_five_seconds(mock_round_plan):
+    mock_round_plan(crash_point=3.0)
     clock = [100.0]
     manager = RoundManager(clock=lambda: clock[0])
     session_id = manager.create_session()["session_id"]
@@ -49,17 +49,11 @@ def test_cashout_at_five_seconds(monkeypatch):
     assert result["payout"] == "127.00"
     assert result["balance"] == "1027.00"
 
-def test_cashout_after_ten_seconds(monkeypatch):
-    monkeypatch.setattr(
-        "round_manager.generate_crash_point",
-        lambda mode: 3.0
-    )
-
+def test_cashout_after_ten_seconds(mock_round_plan):
+    mock_round_plan(crash_point=3.0)
     clock = [100.0]
     manager = RoundManager(clock=lambda: clock[0])
-
     session_id = manager.create_session()["session_id"]
-
     round_id = manager.start_round(
         session_id,
         Decimal("100.00")

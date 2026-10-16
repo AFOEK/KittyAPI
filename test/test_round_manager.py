@@ -10,9 +10,8 @@ def test_create_session():
     assert session["balance"] == "1000.00"
     assert session["session_id"] in manager.sessions
 
-def test_start_round(monkeypatch):
-    monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 2.0)
-    monkeypatch.setattr("round_manager.select_distraction", lambda season: "fish")
+def test_start_round(mock_round_plan):
+    mock_round_plan(crash_point=2.0)
     manager = RoundManager()
     session = manager.create_session()
     session_id = session["session_id"]
@@ -21,8 +20,8 @@ def test_start_round(monkeypatch):
     assert result["balance"] == "900.00"
     assert "crash_point" not in result
 
-def test_successful_cashout(monkeypatch):
-    monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 2.0)
+def test_successful_cashout(mock_round_plan):
+    mock_round_plan(crash_point=2.0)
     clock = [100.0]
     manager = RoundManager( clock=lambda: clock[0])
     session = manager.create_session()
@@ -36,8 +35,8 @@ def test_successful_cashout(monkeypatch):
     assert result["payout"] == "127.00"
     assert result["balance"] == "1027.00"
 
-def test_duplicate_cashout(monkeypatch):
-    monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 2.0)
+def test_duplicate_cashout(mock_round_plan):
+    mock_round_plan(crash_point=2.0)
     clock = [100.0]
     manager = RoundManager(clock=lambda: clock[0])
     session_id = manager.create_session()["session_id"]
@@ -48,8 +47,8 @@ def test_duplicate_cashout(monkeypatch):
     assert first["payout"] == second["payout"]
     assert manager.get_balance(session_id)["balance"] == "1027.00"
 
-def test_crashed_round(monkeypatch):
-    monkeypatch.setattr("round_manager.generate_crash_point", lambda mode: 2.0)
+def test_crashed_round(mock_round_plan):
+    mock_round_plan(crash_point=2.0)
     clock = [100.0]
     manager = RoundManager(clock=lambda: clock[0])
     session_id = manager.create_session()["session_id"]
@@ -68,8 +67,7 @@ def test_round_lifecycle():
     session = manager.create_session()
     session_id = session["session_id"]
 
-    with (patch("round_manager.generate_crash_point", return_value=3.0), patch("round_manager.select_distraction", return_value="fish")):
-        round_data = manager.start_round(session_id, Decimal("100.00"))
+    round_data = manager.start_round(session_id, Decimal("100.00"))
 
     round_id = round_data["round_id"]
 
@@ -94,16 +92,8 @@ def test_round_lifecycle():
 
     assert manager.get_balance(session_id)["balance"] == "1027.00"
 
-def test_seasonal_round_lifecycle(monkeypatch):
-    monkeypatch.setattr(
-        "round_manager.generate_crash_point",
-        lambda mode: 3.0
-    )
-    patch("round_manager.select_season", return_value="spring")
-    monkeypatch.setattr(
-        "round_manager.select_distraction",
-        lambda season: "butterfly"
-    )
+def test_seasonal_round_lifecycle(mock_round_plan):
+    mock_round_plan(crash_point=3.0)
 
     clock = [100.0]
     manager = RoundManager(clock=lambda: clock[0])

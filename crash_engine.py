@@ -1,5 +1,7 @@
 import math
 import secrets
+import hashlib
+import hmac
 
 from randomness import generate_random
 
@@ -13,6 +15,13 @@ GROWTH_RATE = 0.18
 MIN_CRASH_SECONDS = 3.0
 
 SEASONS = ("spring", "summer", "fall", "winter")
+
+SEASON_DURATION_RANGES = {
+    "spring": (2.5, 4.0),
+    "summer": (1.5, 3.0),
+    "fall":   (3.5, 6.0),
+    "winter": (6.0, 10.0),
+}
 
 SEASON_GROWTH = {
     "spring": 0.12,
@@ -64,10 +73,179 @@ def validate_season(season: str) -> None:
     if season not in SEASONS:
         raise ValueError(f"Unknown season: {season}")
 
+def generate_round_seed(mode="hybrid") -> bytes:
+    result = generate_random(mode=mode, qubits=6, samples=6)
+    quantum_hybrid_bytes = result["integer"].to_bytes((result["bits"] + 7) // 8, "big")
+    secure_bytes = secrets.token_bytes(32)
+    return hashlib.sha256(secure_bytes + quantum_hybrid_bytes).digest()
+
+def seeded_uniform(seed: bytes, label: str) -> float:
+    digest = hmac.new(
+        seed,
+        label.encode("utf-8"),
+        hashlib.sha256
+    ).digest()
+
+    number = int.from_bytes(digest[:8], "big") >> 12
+
+    return (number + 0.5) / (1 << 52)
+
+def generate_season_schedule(seed: bytes) -> list[dict]:
+
+    seasons = ("spring", "summer", "fall", "winter")
+
+    horizon = (
+        math.log(MAX_MULTIPLIER)
+        / min(SEASON_GROWTH.values())
+        + 1.0
+    )
+
+    schedule = []
+    elapsed = 0.0
+    index = 0
+
+    while elapsed < horizon:
+        season = seasons[index % 4]
+
+        low, high = SEASON_DURATION_RANGES[season]
+
+        u = seeded_uniform(
+            seed, f"duration:{index}"
+        )
+
+        duration = low + (high - low) * u
+
+        rush = (
+            season == "summer"
+            and seeded_uniform(
+                seed, f"rush:{index}"
+            ) < SUMMER_RUSH_CHANCE
+        )
+
+        growth = (
+            SUMMER_RUSH_GROWTH
+            if rush
+            else SEASON_GROWTH[season]
+        )
+
+        end = min(elapsed + duration, horizon)
+
+        schedule.append({
+            "season": season,
+            "start": elapsed,
+            "end": end,
+            "growth_rate": growth,
+            "rush": rush,
+        })
+
+        elapsed = end
+        index += 1
+
+    return schedule
+
+def seasonal_multiplier_at(
+    elapsed: float,
+    schedule: list[dict],
+    warmup: float = MIN_CRASH_SECONDS
+) -> float:
+
+    active = max(0.0, elapsed - warmup)
+    exponent = 0.0
+
+    for segment in schedule:
+        duration = max(
+            0.0,
+            min(active, segment["end"])
+            - segment["start"]
+        )
+
+        exponent += segment["growth_rate"] * duration
+
+    return math.exp(exponent)
+
+def seasonal_crash_time(
+    crash_point: float,
+    schedule: list[dict],
+    warmup: float = MIN_CRASH_SECONDS
+) -> float:
+
+    if not 1.0 <= crash_point <= MAX_MULTIPLIER:
+        raise ValueError("Invalid crash point")
+
+    remaining = math.log(crash_point)
+
+    if remaining == 0.0:
+        return warmup
+
+    for segment in schedule:
+        growth = segment["growth_rate"]
+
+        duration = (
+            segment["end"] - segment["start"]
+        )
+
+        available_growth = growth * duration
+
+        if remaining <= available_growth:
+            return (
+                warmup
+                + segment["start"]
+                + remaining / growth
+            )
+
+        remaining -= available_growth
+
+    raise RuntimeError(
+        "Season schedule does not reach crash point"
+    )
+
+def current_season(
+    elapsed: float,
+    schedule: list[dict],
+    warmup: float = MIN_CRASH_SECONDS
+) -> dict:
+
+    active = max(0.0, elapsed - warmup)
+
+    for segment in schedule:
+        if active < segment["end"]:
+            return segment
+
+    return schedule[-1]
+
+
+def generate_round_plan(mode="hybrid") -> dict:
+
+    seed = generate_round_seed(mode)
+
+    schedule = generate_season_schedule(seed)
+
+    u = seeded_uniform(seed, "crash")
+    crash_point = crash_from_uniform(u)
+
+    crash_time = seasonal_crash_time(
+        crash_point, schedule
+    )
+
+    crash_season = current_season(
+        crash_time, schedule
+    )["season"]
+
+    distraction = select_distraction(crash_season)
+
+    return {
+        "crash_point": crash_point,
+        "crash_time": crash_time,
+        "schedule": schedule,
+        "distraction": distraction,
+        "warmup": MIN_CRASH_SECONDS,
+        "seed_commitment": hashlib.sha256(
+            seed
+        ).hexdigest(),
+    }
 
 def select_season() -> str:
     return secrets.choice(SEASONS)
-
 
 def season_growth_rate(
     season: str,

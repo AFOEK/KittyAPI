@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS rounds (
     crash_point REAL NOT NULL,
     crash_time_seconds REAL NOT NULL,
     distraction TEXT,
+    season_schedule_json TEXT,
 
     season TEXT NOT NULL DEFAULT 'spring',
     growth_rate REAL NOT NULL DEFAULT 0.12,

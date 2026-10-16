@@ -1,4 +1,4 @@
-
+import json
 from decimal import Decimal
 from hashlib import sha256
 from math import isfinite
@@ -120,6 +120,7 @@ class SQLiteSessionStore:
         crash_point: float,
         crash_time: float,
         distraction: str,
+        season_schedule: list[dict],
         season: str = "spring",
         growth_rate: float = 0.12,
         rush: bool = False,
@@ -170,9 +171,10 @@ class SQLiteSessionStore:
                         season,
                         growth_rate,
                         rush,
-                        lead_in_seconds
+                        lead_in_seconds,
+                        season_schedule_json
                     )
-                    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         round_id,
@@ -185,6 +187,7 @@ class SQLiteSessionStore:
                         growth_rate,
                         int(rush),
                         lead_in_seconds,
+                        json.dumps(season_schedule, separators=(",", ":"))
                     ),
                 )
 

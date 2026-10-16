@@ -1,4 +1,5 @@
 import pytest
+import math
 
 from crash_engine import (
     MIN_CRASH_SECONDS,
@@ -6,6 +7,8 @@ from crash_engine import (
     crash_after_seconds,
     select_distraction,
     season_growth_rate,
+    seasonal_multiplier_at,
+    current_season,
 )
 
 
@@ -29,6 +32,46 @@ def test_warmup_multiplier():
             lead_in_seconds=3.0
         ) == 1.0
 
+
+def test_season_transition():
+    schedule = [
+        {
+            "season": "spring",
+            "start": 0.0,
+            "end": 2.0,
+            "growth_rate": 0.12,
+            "rush": False,
+        },
+        {
+            "season": "summer",
+            "start": 2.0,
+            "end": 5.0,
+            "growth_rate": 0.20,
+            "rush": True,
+        },
+        {
+            "season": "fall",
+            "start": 5.0,
+            "end": 10.0,
+            "growth_rate": 0.12,
+            "rush": False,
+        },
+    ]
+
+    # Three seconds warm-up, then three active seconds.
+    elapsed = 6.0
+
+    segment = current_season(
+        elapsed, schedule, warmup=3.0
+    )
+
+    multiplier = seasonal_multiplier_at(
+        elapsed, schedule, warmup=3.0
+    )
+
+    assert segment["season"] == "summer"
+    assert segment["rush"] is True
+    assert math.floor(multiplier * 100) / 100 == 1.55
 
 def test_winter_slower_than_spring():
     spring_rate, _ = season_growth_rate("spring")
